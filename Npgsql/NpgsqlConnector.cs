@@ -22,6 +22,7 @@
 using System;
 using System.Collections.Generic;
 using System.Data;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Net;
@@ -327,20 +328,13 @@ namespace Npgsql
 
         public void RawOpen(int timeout)
         {
-            // Keep track of time remaining; Even though there may be multiple timeout-able calls,
-            // this allows us to still respect the caller's timeout expectation.
-            var attemptStart = DateTime.Now;
-            var result = Dns.BeginGetHostAddresses(Host, null, null);
+            var sw = new Stopwatch();
+			sw.Start();
+			
+            timeout -= (int)sw.ElapsedMilliseconds;
 
-            if (!result.AsyncWaitHandle.WaitOne(timeout, true))
-            {
-                // Timeout was used up attempting the Dns lookup
-                throw new TimeoutException(L10N.DnsLookupTimeout);
-            }
-
-            timeout -= Convert.ToInt32((DateTime.Now - attemptStart).TotalMilliseconds);
-
-            var ips = Dns.EndGetHostAddresses(result);
+			//do not use the async resolve name because of a lot of dns timeouts in case of paralled.foreach operations
+            var ips = Dns.GetHostAddresses(Host);
             Socket socket = null;
             Exception lastSocketException = null;
 
@@ -352,11 +346,11 @@ namespace Npgsql
                 _log.Trace("Attempting to connect to " + ips[i]);
                 var ep = new IPEndPoint(ips[i], Port);
                 socket = new Socket(ep.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
-                attemptStart = DateTime.Now;
+                sw.Restart();
 
                 try
                 {
-                    result = socket.BeginConnect(ep, null, null);
+                    var result = socket.BeginConnect(ep, null, null);
 
                     if (!result.AsyncWaitHandle.WaitOne(timeout / (ips.Length - i), true))
                     {
@@ -371,7 +365,7 @@ namespace Npgsql
                 catch (Exception e)
                 {
                     _log.Warn("Failed to connect to " + ips[i]);
-                    timeout -= Convert.ToInt32((DateTime.Now - attemptStart).TotalMilliseconds);
+                    timeout -= (int)sw.ElapsedMilliseconds;
                     lastSocketException = e;
 
                     socket.Close();
